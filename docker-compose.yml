@@ -5,6 +5,6 @@ services:
     image: eclipse-mosquitto:latest
     container_name: smart_grid_broker
     ports:
-      - "1883:1883"
+      - "0.0.0.0:1883:1883"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
