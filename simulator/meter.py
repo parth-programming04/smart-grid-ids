@@ -1,76 +1,70 @@
-import asyncio
+import paho.mqtt.client as mqtt
 import json
 import time
 import random
 import hmac
 import hashlib
-import paho.mqtt.client as mqtt
-from paho.mqtt.enums import CallbackAPIVersion
 
-# --- Configuration ---
-BROKER_HOST = "localhost"
-BROKER_PORT = 1883
-METERS = ["meter_001", "meter_002", "meter_003"]
-PUBLISH_INTERVAL = 2.0
-SECRET_KEY = b"super_secret_hackathon_key" # Shared secret for HMAC
+# Configuration
+BROKER = "localhost"
+PORT = 1883
+TOPIC = "smart_grid/telemetry"
+SECRET_KEY = b"secret_key_123"
 
-def on_connect(client, userdata, flags, reason_code, properties=None):
-    if reason_code == 0:
-        print("[SYSTEM] Simulator successfully connected to MQTT Broker.")
-    else:
-        print(f"[ERROR] Failed to connect, return code {reason_code}")
+# Initialize MQTT Client
+client = mqtt.Client()
+client.connect(BROKER, PORT, 60)
 
-def generate_telemetry(meter_id):
-    voltage = random.uniform(235.0, 245.0)
-    current = random.uniform(10.0, 50.0)
-    
-    payload = {
-        "meter_id": meter_id,
-        "timestamp": time.time(),
-        "voltage": round(voltage, 2),
-        "current": round(current, 2),
-        "power": round(voltage * current, 2),
-        "status": "OK"
-    }
-    
-    # Create an HMAC-SHA256 signature of the data
-    payload_str = json.dumps(payload, sort_keys=True)
-    signature = hmac.new(SECRET_KEY, payload_str.encode(), hashlib.sha256).hexdigest()
-    
-    # Add signature to the final message
-    payload["signature"] = signature
-    return payload
+# Simulate an existing meter reading (e.g., 15,420 kWh already billed)
+# This is exactly what a real utility company reads for your monthly bill.
+cumulative_kWh = 15420.5000  
 
-async def run_meter(client, meter_id):
-    print(f"[INIT] Starting secure simulation for {meter_id}...")
-    while True:
-        payload = generate_telemetry(meter_id)
-        # Publish to the RAW topic so the gateway can intercept it
-        topic = f"raw/telemetry/{meter_id}" 
-        
-        client.publish(topic, json.dumps(payload), qos=1)
-        print(f"[PUBLISH] {meter_id} -> V:{payload['voltage']} | HMAC: {payload['signature'][:8]}...")
-        
-        await asyncio.sleep(PUBLISH_INTERVAL)
+print("[SMART METER] Booting up... synchronizing with grid.")
+print("[SMART METER] Beginning encrypted telemetry stream...\n")
 
-async def main():
-    # Fixed DeprecationWarning by adding CallbackAPIVersion.VERSION2
-    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="Simulator_Master", protocol=mqtt.MQTTv5)
-    client.on_connect = on_connect
-    
+while True:
     try:
-        client.connect(BROKER_HOST, BROKER_PORT)
-        client.loop_start() 
-    except Exception as e:
-        print(f"[FATAL] Could not connect: {e}")
-        return
+        # 1. Simulate Grid Physics
+        # Normal voltage in India/Europe is ~230V-240V.
+        voltage = round(random.uniform(235.0, 245.0), 2)
+        # Random current draw simulating household appliances turning on/off
+        current = round(random.uniform(10.0, 50.0), 2)
+        
+        # 2. Calculate Power Consumption (The realistic part!)
+        # Real power is Voltage * Current * Power Factor. 
+        # Divided by 1000 to get kiloWatts (kW)
+        power_factor = 0.95 
+        power_kW = (voltage * current * power_factor) / 1000
+        
+        # Since we sleep for 1 second, the energy used in that second is kW / 3600 (seconds in an hour)
+        cumulative_kWh += (power_kW / 3600)
+        
+        # 3. Build the Payload
+        payload = {
+            "meter_id": "meter_001",
+            "voltage": voltage,
+            "current": current,
+            "power_kW": round(power_kW, 2),
+            "units_kWh": round(cumulative_kWh, 5),
+            "timestamp": int(time.time())
+        }
 
-    tasks = [run_meter(client, meter_id) for meter_id in METERS]
-    print("\n--- Secure Smart Grid Simulator Running ---\n")
-    await asyncio.gather(*tasks)
+        # 4. Cryptographic Signature (Anti-Tampering)
+        # We sort keys so the JSON string is always identical for hashing
+        message_string = json.dumps(payload, sort_keys=True)
+        signature = hmac.new(SECRET_KEY, message_string.encode(), hashlib.sha256).hexdigest()
+        
+        # Add the signature to the final packet
+        payload["signature"] = signature
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
+        # 5. Transmit Data
+        client.publish(TOPIC, json.dumps(payload))
+        print(f"[\u26a1] V: {voltage}V | I: {current}A | Pwr: {round(power_kW, 2)}kW | Total Billed: {round(cumulative_kWh, 4)} Units (kWh)")
+        
+        time.sleep(1)
+
     except KeyboardInterrupt:
-        print("\n[SYSTEM] Simulation stopped gracefully.")
+        print("\n[SMART METER] Shutting down.")
+        break
+    except Exception as e:
+        print(f"[ERROR] {e}")
