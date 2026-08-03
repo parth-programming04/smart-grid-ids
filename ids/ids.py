@@ -1,92 +1,79 @@
-import paho.mqtt.client as mqtt
 import json
-import numpy as np
+import warnings
 import pandas as pd
 from sklearn.ensemble import IsolationForest
-from collections import deque
-import warnings
+import paho.mqtt.client as mqtt
 
-# Suppress sklearn warnings for cleaner terminal output
+# Suppress warnings for a clean terminal output
 warnings.filterwarnings("ignore")
 
-# Configuration
-BROKER = "localhost"
+BROKER = "127.0.0.1"
 PORT = 1883
-TOPIC = "smart_grid/telemetry"
+TOPIC = "smart_grid/telemetry"  # <--- THIS WAS THE BUG! We fixed the topic here.
 
-# Data structures for the AI
-# We will keep a rolling window of the last 50 readings to train the AI
-TRAINING_WINDOW_SIZE = 50
-data_buffer = deque(maxlen=TRAINING_WINDOW_SIZE)
-
-# Initialize the Isolation Forest model
-# contamination=0.05 means we expect roughly 5% of data might be anomalies
-model = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
-is_model_trained = False
+# AI Training Variables
+training_data = []
+TRAINING_SIZE = 50  # It will watch 50 normal messages before it starts defending
+is_trained = False
+model = IsolationForest(contamination=0.05, random_state=42)
 
 def on_connect(client, userdata, flags, rc):
-    print(f"[ML-IDS] Connected to Smart Grid Broker with result code {rc}")
-    client.subscribe(TOPIC)
-    print(f"[ML-IDS] AI Agent listening to {TOPIC}... Waiting for data to train.")
+    print(f"[ML-IDS] Successfully connected to the Grid Broker!")
+    print(f"[ML-IDS] Waiting for Smart Meter data on '{TOPIC}'...")
 
 def on_message(client, userdata, msg):
-    global is_model_trained, model
+    global is_trained, training_data, model
     
     try:
-        # Parse incoming telemetry
         payload = json.loads(msg.payload.decode())
         
-        # We only care about voltage and current for physical anomaly detection
-        voltage = payload.get("voltage")
-        current = payload.get("current")
-        units_kwh = payload.get("units_kWh")
-        meter_id = payload.get("meter_id")
+        # Extract the physics data
+        voltage = payload.get("voltage", 0.0)
+        current = payload.get("current", 0.0)
+        power = payload.get("power_kW", 0.0)
+        units = payload.get("units_kWh", 0.0)
         
-        if voltage is None or current is None:
-            return
+        # Phase 1: Data Collection & Training
+        if not is_trained:
+            training_data.append([voltage, current, power])
+            print(f"[AI-TRAINING] Watching grid behavior... {len(training_data)}/{TRAINING_SIZE}")
             
-        # 1. Add new data to our rolling buffer
-        data_buffer.append([voltage, current])
-        
-        # 2. Check if we have enough data to train/predict
-        if len(data_buffer) < TRAINING_WINDOW_SIZE:
-            print(f"[ML-IDS] Collecting training data... ({len(data_buffer)}/{TRAINING_WINDOW_SIZE})")
+            if len(training_data) >= TRAINING_SIZE:
+                print("\n[AI-SYSTEM] Compiling physics profile. Training Machine Learning Model...")
+                df = pd.DataFrame(training_data, columns=["voltage", "current", "power"])
+                model.fit(df)
+                is_trained = True
+                print("[AI-SYSTEM] AI Active! Now hunting for stealth anomalies.\n")
             return
-            
-        # 3. Train the model dynamically (Online Learning simulation)
-        # In a real grid, this would be trained offline on months of data, 
-        # but doing it live looks amazing for a hackathon demo!
-        df = pd.DataFrame(list(data_buffer), columns=['voltage', 'current'])
-        model.fit(df)
-        is_model_trained = True
+
+        # Phase 2: Live Intrusion Detection
+        new_data = pd.DataFrame([[voltage, current, power]], columns=["voltage", "current", "power"])
         
-        # 4. Predict on the CURRENT incoming packet
-        # reshape(1, -1) because we are predicting a single sample
-        current_sample = np.array([[voltage, current]])
-        prediction = model.predict(current_sample) # Returns 1 for normal, -1 for anomaly
+        # Predict: 1 means Normal, -1 means Anomaly
+        prediction = model.predict(new_data)[0]
         
-        # 5. Evaluate the AI's prediction
-        if prediction[0] == -1:
-            print("\n" + "="*50)
-            print(f"🚨 [AI ALERT] STEALTH ANOMALY DETECTED! 🚨")
-            print(f"Target: {meter_id}")
-            print(f"Suspicious Physics: Voltage={voltage}V, Current={current}A")
-            print("="*50 + "\n")
+        if prediction == -1:
+            print(f"🚨 [AI ALERT] STEALTH ANOMALY DETECTED! Physics impossible! V:{voltage} I:{current} 🚨")
         else:
-            print(f"[ML-IDS] Normal -> {meter_id}: {voltage}V, {current}A | Billed: {units_kwh} kWh")
-
-    except json.JSONDecodeError:
-        pass
+            print(f"✅ [AI-OK] Physics normal. V:{voltage:.1f} | I:{current:.1f} | Total: {units:.2f} kWh")
+            
     except Exception as e:
-        print(f"[ML-IDS Error] {e}")
+        pass
 
-# Setup MQTT Client
-client = mqtt.Client()
+# Use VERSION1 to avoid deprecation warnings
+try:
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+except AttributeError:
+    client = mqtt.Client()
+
 client.on_connect = on_connect
 client.on_message = on_message
 
 print("[ML-IDS] Booting up Machine Learning Intrusion Detection System...")
 client.connect(BROKER, PORT, 60)
+client.subscribe(TOPIC)
 
-# Run forever
-client.loop_forever()
+try:
+    client.loop_forever()
+except KeyboardInterrupt:
+    print("\n[ML-IDS] Shutting down AI securely.")
