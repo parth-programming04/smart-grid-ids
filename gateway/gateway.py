@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import time
 from collections import defaultdict
+import sqlite3
 
 # Configuration
 BROKER = "localhost"
@@ -14,6 +15,28 @@ SECRET_KEY = b"secret_key_123"
 # Rate limiting database: tracks timestamps of messages per meter
 message_history = defaultdict(list)
 MAX_MESSAGES_PER_SECOND = 2  # A normal meter sends 1 per second.
+
+# ==========================================
+# SECURE DATABASE SETUP (SQLite)
+# ==========================================
+# This creates a local database file to permanently store verified data.
+def init_db():
+    with sqlite3.connect("secure_grid.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS telemetry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meter_id TEXT,
+                voltage REAL,
+                current REAL,
+                power_kW REAL,
+                units_kWh REAL,
+                timestamp INTEGER
+            )
+        ''')
+        conn.commit()
+
+init_db()
 
 def verify_signature(payload):
     """
@@ -73,9 +96,27 @@ def on_message(client, userdata, msg):
             print(f"[DROP] Invalid HMAC Signature from {meter_id}. Unauthorized command blocked.")
             return
 
+        # ==========================================
+        # SECURE STORAGE: Save to SQL Database
+        # ==========================================
         # If it survives both checks, it is a valid, secure message!
-        # In a real grid, the Gateway would forward this to a secure internal database.
-        print(f"[\u2705 GATEWAY-PASS] Verified packet from {meter_id} | {payload.get('power_kW')} kW | {payload.get('units_kWh')} kWh")
+        # We now permanently log it in our billing database.
+        with sqlite3.connect("secure_grid.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO telemetry (meter_id, voltage, current, power_kW, units_kWh, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                meter_id, 
+                payload.get('voltage'), 
+                payload.get('current'), 
+                payload.get('power_kW'), 
+                payload.get('units_kWh'), 
+                payload.get('timestamp')
+            ))
+            conn.commit()
+
+        print(f"[\u2705 GATEWAY-PASS] Verified & Saved packet from {meter_id} | {payload.get('power_kW')} kW | {payload.get('units_kWh')} kWh")
 
     except json.JSONDecodeError:
         print("[DROP] Malformed JSON payload received.")
