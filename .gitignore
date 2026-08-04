@@ -1,0 +1,19 @@
+Virtual Environments
+
+venv/
+simulator/venv/
+env/
+
+Database files
+
+*.db
+secure_grid.db
+
+Python Cache
+
+pycache/
+*.pyc
+
+Docker
+
+.docker/
