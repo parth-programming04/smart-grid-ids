@@ -13,7 +13,7 @@ TOPIC = "smart_grid/telemetry"  # <--- THIS WAS THE BUG! We fixed the topic here
 
 # AI Training Variables
 training_data = []
-TRAINING_SIZE = 50  # It will watch 50 normal messages before it starts defending
+TRAINING_SIZE = 500  # Increased to 500 to handle the massive volume of 30+ meters!
 is_trained = False
 model = IsolationForest(contamination=0.05, random_state=42)
 
@@ -27,7 +27,8 @@ def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
         
-        # Extract the physics data
+        # Extract the physics data and the specific meter ID
+        meter_id = payload.get("meter_id", "UNKNOWN")
         voltage = payload.get("voltage", 0.0)
         current = payload.get("current", 0.0)
         power = payload.get("power_kW", 0.0)
@@ -53,9 +54,9 @@ def on_message(client, userdata, msg):
         prediction = model.predict(new_data)[0]
         
         if prediction == -1:
-            print(f"🚨 [AI ALERT] STEALTH ANOMALY DETECTED! Physics impossible! V:{voltage} I:{current} 🚨")
+            print(f"🚨 [AI ALERT] STEALTH ANOMALY FROM {meter_id}! Physics impossible! V:{voltage} I:{current} 🚨")
         else:
-            print(f"✅ [AI-OK] Physics normal. V:{voltage:.1f} | I:{current:.1f} | Total: {units:.2f} kWh")
+            print(f"✅ [AI-OK] {meter_id} is normal. V:{voltage:.1f} | I:{current:.1f} | Total: {units:.2f} kWh")
             
     except Exception as e:
         pass
